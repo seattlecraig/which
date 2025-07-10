@@ -7,127 +7,160 @@
  *  ====        ======          ===========
  *  07-10-25    Craig           initial implementation
  */
-
 using System;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 
 class Program
 {
+    /*
+     * what is an executable?
+     */
     static readonly string[] ExecutableExtensions = new[]
     {
         ".exe", ".bat", ".cmd", ".com", ".ps1", ".py", ".sh"
     };
 
+    /*
+     * colors
+     */
     const string ColorGreen = "\x1b[32m";
     const string ColorBlue = "\x1b[34m";
     const string ColorWhite = "\x1b[37m";
+    const string ColorGray = "\x1b[90m";
     const string ColorReset = "\x1b[0m";
 
+    /*
+     * flags
+     */
+    static bool matchAll = false;
+    static bool globalSearch = false;
+    static bool hiddenOnly = false;
+    static bool noHidden = false;
+    static bool firstMatch = false;
+    static bool colorOutput = true;
+    static bool outputJson = false;
+    static bool outputCsv = false;
+    static bool showSummary = false;
+    static bool longFormat = false;
+    static bool reverseSort = false;
+    static string sortField = "";
+
+    static string drives = "";
+    static string query = "";
+    static Regex? regex = null;
+
+    static HashSet<string> debugFlags = new(StringComparer.OrdinalIgnoreCase);
+    static List<FileResult> results = new();
+
+    /*
+     * the data structure for results
+     */
+    class FileResult
+    {
+        public string Path { get; set; } = "";
+        public string Type { get; set; } = "";
+        public bool Hidden { get; set; }
+        public FileAttributes Attributes { get; set; }
+        public long Size { get; set; }
+        public DateTime Modified { get; set; }
+    }
+
+    /*
+     * Main
+     * 
+     * This is the entry point of the program.
+     */
     static void Main(string[] args)
     {
-        bool useRegex = false;
-        bool matchAll = false;
-        bool globalSearch = false;
-        string drives = "";
-        string pattern = "";
-        string query = "";
+        /*
+         * expand the options
+         */
+        List<string> expandedArgs = new();
+        foreach (var arg in args)
+        {
+            if (arg.StartsWith("-") && !arg.StartsWith("--") && arg.Length > 2 && !arg.StartsWith("-g"))
+                foreach (var ch in arg[1..]) expandedArgs.Add("-" + ch);
+            else
+                expandedArgs.Add(arg);
+        }
 
         /*
-         * Parse args
+         * parse the arguments
          */
-        for (int i = 0; i < args.Length; i++)
+        for (int i = 0; i < expandedArgs.Count; i++)
         {
-            string arg = args[i];
-
-            if (arg == "-?")
+            string arg = expandedArgs[i];
+            switch (arg)
             {
-                ShowHelp();
-                return;
-            }
-            else if (arg == "-a")
-            {
-                matchAll = true;
-            }
-            else if (arg == "-r")
-            {
-                useRegex = true;
-                if (++i >= args.Length)
-                {
-                    ExitWithError("Missing regex pattern after -r.");
-                }
-                pattern = args[i];
-            }
-            else if (arg.StartsWith("-g"))
-            {
-                globalSearch = true;
-                if (arg.Length > 2)
-                {
-                    drives = arg.Substring(2).ToUpperInvariant();
-                }
-                else
-                {
-                    drives = ""; // will default to current drive below
-                }
-            }
-            else if (string.IsNullOrEmpty(query))
-            {
-                query = arg;
-            }
-            else
-            {
-                ExitWithError($"Unrecognized argument: {arg}");
+                case "-?": ShowHelp(); return;
+                case "-a": matchAll = true; break;
+                case "-l": longFormat = true; break;
+                case "-s": sortField = "size"; break;
+                case "-t": sortField = "time"; break;
+                case "-r": reverseSort = true; break;
+                case "--hidden-only": hiddenOnly = true; break;
+                case "--no-hidden": noHidden = true; break;
+                case "--first-match": firstMatch = true; break;
+                case "--no-color": colorOutput = false; break;
+                case "--json": outputJson = true; break;
+                case "--csv": outputCsv = true; break;
+                case "--summary": showSummary = true; break;
+                default:
+                    if (arg.StartsWith("--debug="))
+                        foreach (var d in arg[8..].Split(',')) debugFlags.Add(d.Trim());
+                    else if (arg.StartsWith("-g"))
+                    {
+                        globalSearch = true; drives = arg.Length > 2 ? arg[2..].ToUpperInvariant() : "";
+                    }
+                    else if (string.IsNullOrEmpty(query))
+                    {
+                        query = arg;
+                        if (query.Contains('*') || query.Contains('?'))
+                            regex = new Regex(ConvertGlobToRegex(query), RegexOptions.IgnoreCase);
+                    }
+                    else ExitWithError($"Unrecognized argument: {arg}");
+                    break;
             }
         }
 
-        if (string.IsNullOrEmpty(query) && !useRegex)
+        if (string.IsNullOrEmpty(query))
         {
             Console.Error.WriteLine("Error: No search term provided.\n");
             ShowHelp();
             Environment.Exit(1);
         }
 
-        /*
-         * set up regular expression if needed
-         */
-        Regex? regex = null;
-        if (useRegex)
-        {
-            try
-            {
-                regex = new Regex(pattern, RegexOptions.IgnoreCase);
-            }
-            catch (ArgumentException ex)
-            {
-                ExitWithError($"Invalid regex: {ex.Message}");
-            }
-        }
+        if (hiddenOnly && noHidden)
+            ExitWithError("You cannot use both --hidden-only and --no-hidden.");
 
         Console.OutputEncoding = System.Text.Encoding.UTF8;
-        EnableVirtualTerminal();
+        if (colorOutput) EnableVirtualTerminal();
 
         /*
-         * search the entire set of specified drives
+         * look across the specified drives
          */
         if (globalSearch)
         {
             if (string.IsNullOrEmpty(drives))
-            {
                 drives = Path.GetPathRoot(Environment.CurrentDirectory)[0].ToString().ToUpper();
-            }
 
             foreach (char drive in drives)
             {
                 string root = $"{drive}:\\";
                 if (Directory.Exists(root))
                 {
-                    RecursiveSearch(root, regex, query, matchAll, useRegex);
+                    RecursiveSearch(root);
+                    if (firstMatch && results.Count > 0) break;
                 }
             }
         }
+
         /*
-         * search the PATH environment variable
+         * look across the path
          */
         else
         {
@@ -140,129 +173,272 @@ class Program
 
                 try
                 {
-                    var matches = Directory.EnumerateFileSystemEntries(dir)
-                        .Where(file => MatchFile(file, regex, query, matchAll, useRegex));
-
-                    foreach (var match in matches)
+                    foreach (var file in Directory.EnumerateFileSystemEntries(dir))
                     {
-                        PrintColored(match);
+                        if (MatchFile(file))
+                        {
+                            results.Add(FormatResult(file));
+                            if (firstMatch) break;
+                        }
                     }
                 }
-                catch 
-                {
-                    /* silently skip access errors */
-                }
+                catch { }
             }
         }
 
+        /*
+         * sort by size or time if requested
+         */
+        if (!string.IsNullOrEmpty(sortField))
+        {
+            results = sortField switch
+            {
+                "size" => results.OrderBy(r => r.Size).ToList(),
+                "time" => results.OrderBy(r => r.Modified).ToList(),
+                _ => results
+            };
+        }
+
+        if (reverseSort) results.Reverse();
+
+        /*
+         * output formats
+         */
+        if (outputJson)
+            Console.WriteLine(JsonSerializer.Serialize(results, new JsonSerializerOptions { WriteIndented = true }));
+        else if (outputCsv)
+            foreach (var res in results)
+                Console.WriteLine($"\"{res.Path}\",{res.Type},{res.Hidden}");
+        else
+            foreach (var res in results)
+                if (longFormat) PrintLongFormat(res); else PrintColored(res);
+
+        if (showSummary)
+            Console.WriteLine($"{results.Count} match(es) found.");
     } /* Main() */
 
     /*
-     * RecursiveSearch
+     * Recursive search through directories
      * 
-     * Recursively search directories for matching files using regex or simple substring matching.
+     * This method scans the directory tree starting from the given root path.
      */
-    static void RecursiveSearch(string root, Regex? regex, string query, bool matchAll, bool useRegex)
+    static void RecursiveSearch(string root)
     {
         try
         {
             foreach (var file in Directory.EnumerateFileSystemEntries(root))
             {
-                if (MatchFile(file, regex, query, matchAll, useRegex))
+                if (debugFlags.Contains("scan")) Console.WriteLine($"SCANNING: {file}");
+                if (MatchFile(file))
                 {
-                    PrintColored(file);
+                    if (debugFlags.Contains("match")) Console.WriteLine($"MATCHED: {file}");
+                    results.Add(FormatResult(file));
+                    if (firstMatch) return;
                 }
             }
 
             foreach (var dir in Directory.EnumerateDirectories(root))
             {
-                //PrintColored("*** "+dir +" ***"); // print directory itself
-                RecursiveSearch(dir, regex, query, matchAll, useRegex);
+                RecursiveSearch(dir);
+                if (firstMatch && results.Count > 0) return;
             }
         }
-        catch
+        catch (Exception ex)
         {
-            /* silently skip access errors */
+            if (debugFlags.Contains("error"))
+                Console.Error.WriteLine($"[ERROR] {root}: {ex.Message}");
         }
     } /* RecursiveSearch */
 
     /*
      * MatchFile
      * 
-     * Check if the file matches the search criteria based on regex or substring.
+     * This method checks if a file matches the search criteria.
      */
-    static bool MatchFile(string file, Regex? regex, string query, bool matchAll, bool useRegex)
+    static bool MatchFile(string file)
     {
         string name = Path.GetFileName(file);
         bool isDir = Directory.Exists(file);
 
-        if (!matchAll && !isDir && !ExecutableExtensions.Any(ext => name.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+        try
         {
-            return false;
-        }
+            var attr = File.GetAttributes(file);
+            bool isHidden = attr.HasFlag(FileAttributes.Hidden);
+            bool matchesPattern =
+                                regex != null
+                                    ? regex!.IsMatch(name)
+                                    : name.Equals(query, StringComparison.OrdinalIgnoreCase);
 
-        return useRegex ? regex!.IsMatch(name) : name.ToLowerInvariant().Contains(query);
+            if (debugFlags.Contains("check"))
+                Console.WriteLine($"CHECKING: {file} — H:{isHidden}, P:{matchesPattern}");
+
+            if (hiddenOnly) return isHidden && matchesPattern;
+            if (noHidden && isHidden) return false;
+            if (!matchAll && !isDir && !ExecutableExtensions.Any(ext => name.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            return matchesPattern;
+        }
+        catch { return false; }
 
     } /* MatchFile */
 
     /*
+     * FormatResult
+     * 
+     * This method formats the file result into a structured object.
+     */
+    static FileResult FormatResult(string path)
+    {
+        var info = new FileInfo(path);
+        var attr = info.Attributes;
+
+        string type = attr.HasFlag(FileAttributes.Directory) ? "Directory" :
+            ExecutableExtensions.Any(ext => path.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) ? "Executable" : "File";
+
+        return new FileResult
+        {
+            Path = path,
+            Type = type,
+            Hidden = attr.HasFlag(FileAttributes.Hidden),
+            Attributes = attr,
+            Size = attr.HasFlag(FileAttributes.Directory) ? 0 : info.Length,
+            Modified = info.LastWriteTime
+        };
+    } /* FormatResult */
+
+    /*
      * PrintColored
      * 
-     * Print the file path with appropriate color based on type (directory, executable, etc.)
+     * print according to the type of file
      */
-    static void PrintColored(string path)
+    static void PrintColored(FileResult res)
     {
-        string color = ColorWhite;
+        string color = res.Hidden ? ColorGray :
+                       res.Type == "Directory" ? ColorBlue :
+                       res.Type == "Executable" ? ColorGreen : ColorWhite;
 
-        if (Directory.Exists(path))
-        {
-            color = ColorBlue;
-        }
-        else if (ExecutableExtensions.Any(ext => path.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
-        {
-            color = ColorGreen;
-        }
+        if (!colorOutput) color = "";
+        Console.WriteLine($"{color}{res.Path}{ColorReset}");
 
-        Console.WriteLine($"{color}{path}{ColorReset}");
     } /* PrintColored */
+
+    /*
+     * PrintLongFormat
+     * 
+     * print in long format with attributes, size, time, and full path
+     */
+    static void PrintLongFormat(FileResult res)
+    {
+        string attr = BuildAttrString(res.Attributes);
+        string size = FormatSize(res.Size).PadLeft(10);
+        string time = res.Modified.ToString("MMM dd yyyy  HH:mm");
+        string name = res.Path; // ✅ full path now shown
+        if (colorOutput)
+            name = $"{GetColor(res)}{name}{ColorReset}";
+        Console.WriteLine($"{attr}  {size}  {time}  {name}");
+
+    } /* PrintLongFormat */
+
+    /*
+     * BuildAttrString
+     * 
+     * builds a string representation of file attributes
+     */
+    static string BuildAttrString(FileAttributes attr)
+    {
+        return string.Concat(
+            attr.HasFlag(FileAttributes.Directory) ? 'd' : '-',
+            attr.HasFlag(FileAttributes.Hidden) ? 'h' : '-',
+            attr.HasFlag(FileAttributes.System) ? 's' : '-',
+            attr.HasFlag(FileAttributes.ReadOnly) ? 'r' : '-',
+            attr.HasFlag(FileAttributes.Archive) ? 'a' : '-',
+            attr.HasFlag(FileAttributes.Temporary) ? 't' : '-',
+            attr.HasFlag(FileAttributes.Normal) ? 'w' : '-'
+        );
+    } /* BuildAttrString */
+
+    /*
+     * FormatSize
+     * 
+     * formats the size in a human-readable format
+     */
+    static string FormatSize(long size)
+    {
+        if (size >= 1L << 30) return $"{size / (1L << 30):0.##} GB";
+        if (size >= 1L << 20) return $"{size / (1L << 20):0.##} MB";
+        if (size >= 1L << 10) return $"{size / (1L << 10):0.##} KB";
+        return $"{size} B";
+    } /* FormatSize */
+
+    /*
+     * GetColor
+     * 
+     * returns the color code for the file type
+     */
+    static string GetColor(FileResult res)
+    {
+        if (!colorOutput) return "";
+        return res.Hidden ? ColorGray :
+               res.Type == "Directory" ? ColorBlue :
+               res.Type == "Executable" ? ColorGreen : ColorWhite;
+    } /* GetColor */
+
+    /*
+     * ConvertGlobToRegex
+     * 
+     * converts a glob pattern (e.g. *.exe) to a regex pattern
+     */
+    static string ConvertGlobToRegex(string glob)
+    {
+        return "^" + Regex.Escape(glob).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
+    } /* ConvertGlobToRegex */
 
     /*
      * ShowHelp
      * 
-     * Display the help message for the command.
+     * displays the help message
      */
     static void ShowHelp()
     {
-        Console.WriteLine("which [-a] [-r <regex>] [-g[drives]] <query>");
-        Console.WriteLine("Searches for matching files in PATH or entire drives.\n");
+        Console.WriteLine("which [-a] [-l] [-s] [-t] [-r] [-g[drives]] [--debug=...] <query>");
         Console.WriteLine("Options:");
-        Console.WriteLine("  -?            Show help");
-        Console.WriteLine("  -a            Match any file, including directories");
-        Console.WriteLine("  -r <pattern>  Use regular expression matching");
-        Console.WriteLine("  -g[CDZ]       Global recursive search on specified drives");
-        Console.WriteLine("                If no drives specified, uses current drive.");
-        Console.WriteLine();
+        Console.WriteLine("  -a                Match any file, including directories");
+        Console.WriteLine("  -l                Long-format output");
+        Console.WriteLine("  -s                Sort by size");
+        Console.WriteLine("  -t                Sort by time");
+        Console.WriteLine("  -r                Reverse sort order");
+        Console.WriteLine("  -g[CDZ]           Global search on specified drives");
+        Console.WriteLine("  --hidden-only     Show only hidden files");
+        Console.WriteLine("  --no-hidden       Exclude hidden files");
+        Console.WriteLine("  --first-match     Stop after first match");
+        Console.WriteLine("  --no-color        Disable color output");
+        Console.WriteLine("  --json            Output in JSON format");
+        Console.WriteLine("  --csv             Output in CSV format");
+        Console.WriteLine("  --summary         Show match count");
+        Console.WriteLine("  --debug=FLAGS     Enable debug tracing (scan,match,check,error)");
+
     } /* ShowHelp */
 
     /*
      * ExitWithError
      * 
-     * as it says, exits with an error message
+     *  as it sounds
      */
     static void ExitWithError(string message)
     {
         Console.Error.WriteLine("Error: " + message);
         Environment.Exit(1);
+
     } /* ExitWithError */
 
     /*
      * EnableVirtualTerminal
      * 
-     * Enables ANSI escape codes for colored output on Windows 10+.
+     * enables virtual terminal processing for colored output in Windows console
      */
     static void EnableVirtualTerminal()
     {
-        // Enable ANSI escape codes on Windows 10+
         try
         {
             var handle = NativeMethods.GetStdHandle(-11);
@@ -275,12 +451,12 @@ class Program
     /*
      * NativeMethods
      * 
-     * Contains declarations for enabling virtual terminal processing on Windows.
+     * contains P/Invoke methods for console mode manipulation
      */
     internal static class NativeMethods
     {
         [System.Runtime.InteropServices.DllImport("kernel32.dll")] internal static extern IntPtr GetStdHandle(int nStdHandle);
         [System.Runtime.InteropServices.DllImport("kernel32.dll")] internal static extern bool GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
         [System.Runtime.InteropServices.DllImport("kernel32.dll")] internal static extern bool SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
-    } /* NativeMethods */
+    }
 }

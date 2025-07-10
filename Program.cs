@@ -39,30 +39,45 @@ class Program
          */
         for (int i = 0; i < args.Length; i++)
         {
-            switch (args[i])
+            string arg = args[i];
+
+            if (arg == "-?")
             {
-                case "-?":
-                    ShowHelp();
-                    return;
-                case "-a":
-                    matchAll = true;
-                    break;
-                case "-r":
-                    useRegex = true;
-                    if (i + 1 < args.Length) pattern = args[++i];
-                    else ExitWithError("Missing regex pattern after -r.");
-                    break;
-                case "-g":
-                    globalSearch = true;
-                    if (i + 1 < args.Length && !args[i + 1].StartsWith("-"))
-                        drives = args[++i].ToUpperInvariant();
-                    break;
-                default:
-                    if (string.IsNullOrEmpty(query))
-                        query = args[i];
-                    else
-                        ExitWithError($"Unrecognized argument: {args[i]}");
-                    break;
+                ShowHelp();
+                return;
+            }
+            else if (arg == "-a")
+            {
+                matchAll = true;
+            }
+            else if (arg == "-r")
+            {
+                useRegex = true;
+                if (++i >= args.Length)
+                {
+                    ExitWithError("Missing regex pattern after -r.");
+                }
+                pattern = args[i];
+            }
+            else if (arg.StartsWith("-g"))
+            {
+                globalSearch = true;
+                if (arg.Length > 2)
+                {
+                    drives = arg.Substring(2).ToUpperInvariant();
+                }
+                else
+                {
+                    drives = ""; // will default to current drive below
+                }
+            }
+            else if (string.IsNullOrEmpty(query))
+            {
+                query = arg;
+            }
+            else
+            {
+                ExitWithError($"Unrecognized argument: {arg}");
             }
         }
 
@@ -106,7 +121,9 @@ class Program
             {
                 string root = $"{drive}:\\";
                 if (Directory.Exists(root))
+                {
                     RecursiveSearch(root, regex, query, matchAll, useRegex);
+                }
             }
         }
         /*
@@ -123,39 +140,48 @@ class Program
 
                 try
                 {
-                    var matches = Directory.EnumerateFiles(dir)
+                    var matches = Directory.EnumerateFileSystemEntries(dir)
                         .Where(file => MatchFile(file, regex, query, matchAll, useRegex));
 
                     foreach (var match in matches)
+                    {
                         PrintColored(match);
+                    }
                 }
-                catch { }
+                catch 
+                {
+                    /* silently skip access errors */
+                }
             }
         }
+
     } /* Main() */
 
     /*
      * RecursiveSearch
      * 
-     * Recursively search directories for matching files useing regex or simple substring matching.
+     * Recursively search directories for matching files using regex or simple substring matching.
      */
     static void RecursiveSearch(string root, Regex? regex, string query, bool matchAll, bool useRegex)
     {
         try
         {
-            foreach (var file in Directory.EnumerateFiles(root))
+            foreach (var file in Directory.EnumerateFileSystemEntries(root))
             {
                 if (MatchFile(file, regex, query, matchAll, useRegex))
+                {
                     PrintColored(file);
+                }
             }
 
             foreach (var dir in Directory.EnumerateDirectories(root))
             {
+                //PrintColored("*** "+dir +" ***"); // print directory itself
                 RecursiveSearch(dir, regex, query, matchAll, useRegex);
             }
         }
-        catch 
-        { 
+        catch
+        {
             /* silently skip access errors */
         }
     } /* RecursiveSearch */
@@ -168,8 +194,12 @@ class Program
     static bool MatchFile(string file, Regex? regex, string query, bool matchAll, bool useRegex)
     {
         string name = Path.GetFileName(file);
-        if (!matchAll && !ExecutableExtensions.Any(ext => name.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+        bool isDir = Directory.Exists(file);
+
+        if (!matchAll && !isDir && !ExecutableExtensions.Any(ext => name.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+        {
             return false;
+        }
 
         return useRegex ? regex!.IsMatch(name) : name.ToLowerInvariant().Contains(query);
 
@@ -185,12 +215,15 @@ class Program
         string color = ColorWhite;
 
         if (Directory.Exists(path))
+        {
             color = ColorBlue;
+        }
         else if (ExecutableExtensions.Any(ext => path.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
+        {
             color = ColorGreen;
+        }
 
         Console.WriteLine($"{color}{path}{ColorReset}");
-
     } /* PrintColored */
 
     /*
@@ -200,13 +233,13 @@ class Program
      */
     static void ShowHelp()
     {
-        Console.WriteLine("which [-a] [-r <regex>] [-g [drives]] <query>");
+        Console.WriteLine("which [-a] [-r <regex>] [-g[drives]] <query>");
         Console.WriteLine("Searches for matching files in PATH or entire drives.\n");
         Console.WriteLine("Options:");
         Console.WriteLine("  -?            Show help");
-        Console.WriteLine("  -a            Match any file, not just executables");
+        Console.WriteLine("  -a            Match any file, including directories");
         Console.WriteLine("  -r <pattern>  Use regular expression matching");
-        Console.WriteLine("  -g [CDZ]      Global recursive search on specified drives");
+        Console.WriteLine("  -g[CDZ]       Global recursive search on specified drives");
         Console.WriteLine("                If no drives specified, uses current drive.");
         Console.WriteLine();
     } /* ShowHelp */
@@ -237,7 +270,6 @@ class Program
             NativeMethods.SetConsoleMode(handle, mode | 0x4);
         }
         catch { }
-
     } /* EnableVirtualTerminal */
 
     /*
@@ -250,6 +282,5 @@ class Program
         [System.Runtime.InteropServices.DllImport("kernel32.dll")] internal static extern IntPtr GetStdHandle(int nStdHandle);
         [System.Runtime.InteropServices.DllImport("kernel32.dll")] internal static extern bool GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
         [System.Runtime.InteropServices.DllImport("kernel32.dll")] internal static extern bool SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
-
     } /* NativeMethods */
 }

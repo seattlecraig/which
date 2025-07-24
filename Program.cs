@@ -415,6 +415,7 @@ class Program
         Console.WriteLine("Options:");
         Console.WriteLine("  -a                Match any file, including directories");
         Console.WriteLine("  -l                Long-format output");
+        Console.WriteLine("  -n                Do not auto-append .* to extensionless queries");
         Console.WriteLine("  -s                Sort by size");
         Console.WriteLine("  -t                Sort by time");
         Console.WriteLine("  -r                Reverse sort order");

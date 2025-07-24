@@ -47,6 +47,7 @@ class Program
     static bool showSummary = false;
     static bool longFormat = false;
     static bool reverseSort = false;
+    static bool disableExtensionFallback = false;
     static string sortField = "";
 
     static string drives = "";
@@ -99,6 +100,7 @@ class Program
                 case "-?": ShowHelp(); return;
                 case "-a": matchAll = true; break;
                 case "-l": longFormat = true; break;
+                case "-n": disableExtensionFallback = true; break;
                 case "-s": sortField = "size"; break;
                 case "-t": sortField = "time"; break;
                 case "-r": reverseSort = true; break;
@@ -116,9 +118,17 @@ class Program
                     {
                         globalSearch = true; drives = arg.Length > 2 ? arg[2..].ToUpperInvariant() : "";
                     }
-                    else if (string.IsNullOrEmpty(query))
+                    if (string.IsNullOrEmpty(query))
                     {
                         query = arg;
+
+                        // If it has no extension, and fallback is enabled, treat as glob for any extension
+                        if (!disableExtensionFallback && !query.Contains('.') && !query.Contains('*') && !query.Contains('?'))
+                        {
+                            query += ".*";
+                        }
+
+                        // Compile regex if it now has glob characters
                         if (query.Contains('*') || query.Contains('?'))
                             regex = new Regex(ConvertGlobToRegex(query), RegexOptions.IgnoreCase);
                     }
